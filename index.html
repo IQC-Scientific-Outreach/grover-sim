@@ -121,6 +121,8 @@
   .switch[aria-checked="true"] .track{ background: var(--crimson); }
   .switch[aria-checked="true"] .track::after{ transform: translateX(18px); }
   .switch:focus-visible{ outline:2px solid var(--crimson); outline-offset:3px; border-radius:6px; }
+  .switch:disabled{ opacity:.4; cursor:default; }
+  .hidden-ket{ font: 700 20px var(--serif); color: var(--crimson); padding: 3px 0; white-space: nowrap; }
 
   /* ---- working panel ---- */
   .status{ font-size:13.5px; color: var(--ink-soft); margin: 0 0 16px; min-height: 2.9em; max-width: 90ch; }
@@ -304,6 +306,10 @@
       </div>
       <div class="tool tool-row">
         <div class="tool">
+          <span class="tool-label">Show marked state</span>
+          <button type="button" class="switch" id="show-switch" role="switch" aria-checked="true"><span class="track" aria-hidden="true"></span><span id="show-text">On</span></button>
+        </div>
+        <div class="tool">
           <span class="tool-label">Multiple marked states</span>
           <button type="button" class="switch" id="multi-switch" role="switch" aria-checked="false"><span class="track" aria-hidden="true"></span><span id="multi-text">Off</span></button>
         </div>
@@ -445,6 +451,8 @@
   const S = {
     n: 3, N: 8, marked: new Set([5]),
     multi: false,
+    hidden: false,         // Show marked state off: the marked state is unknown until measured
+    revealed: false,       // a hidden marked state has just been found by a measurement
     randCount: 1,          // requested M for 5+ qubits
     m: 1,                  // the state sits at angle m·θ (m odd). Oracle: m → −m. Diffusion: m → 2 − m.
     disp: 0,               // the angle currently drawn (radians, continuous, may wrap past 2π)
@@ -472,6 +480,10 @@
   const bits = i => i.toString(2).padStart(S.n, '0');
   const ket = i => '|' + bits(i) + '⟩';
   const sortedMarked = () => [...S.marked].sort((a, b) => a - b);
+  const concealed = () => S.hidden && !S.revealed;
+  const qKet = () => '|' + '?'.repeat(S.n) + '\u27E9';
+  // The single marked state as shown on screen: |???> while it is hidden and not yet found.
+  const markedKet = () => concealed() ? qKet() : ket(sortedMarked()[0]);
   const pAt = k => Math.pow(Math.sin((2 * k + 1) * theta()), 2);
   const fmtPct = p => (p * 100).toFixed(p > 0.9995 || p < 0.0005 ? 0 : (p < 0.01 ? 2 : 1)) + '%';
   // Angle in degrees, reported in the range (−180°, 180°]
@@ -487,7 +499,7 @@
   }
   // How the marked set is named in running text.
   function markedName(html){
-    if (M() === 1){ const k = ket(sortedMarked()[0]); return html ? '<b>' + k + '</b>' : k; }
+    if (M() === 1){ const k = markedKet(); return html ? '<b>' + k + '</b>' : k; }
     return 'one of the ' + M() + ' marked states';
   }
 
@@ -522,7 +534,7 @@
     s += '<circle class="p-circle" cx="0" cy="0" r="' + R + '"/>';
     s += '<line class="p-axis" x1="-114" y1="0" x2="110" y2="0"/><polygon class="p-arrow" points="116,0 104,-6.5 104,6.5"/>';
     s += '<line class="p-axis" x1="0" y1="114" x2="0" y2="-110"/><polygon class="p-arrow" points="0,-116 -6.5,-104 6.5,-104"/>';
-    const yLab = M() === 1 ? ket(sortedMarked()[0]) : '|w⟩';
+    const yLab = M() === 1 ? markedKet() : '|w⟩';
     s += '<text class="p-label w" x="0" y="-124" text-anchor="middle"' + (S.n >= 8 && M() === 1 ? ' style="font-size:15px"' : '') + '>' + yLab + '</text>';
     s += '<text class="p-small" x="10" y="-108">' + (M() === 1 ? 'marked' : M() + ' marked') + '</text>';
     s += '<text class="p-label" x="121" y="6">|w<tspan baseline-shift="super" font-size="11">⊥</tspan>⟩</text>';
@@ -583,8 +595,26 @@
      Up to 64 outcomes: one bar each. From 128 outcomes bars are thinner than a
      few pixels, so every unmarked state (they all share one amplitude) is drawn
      as a single band and each marked state as a red bar at least 3px wide. */
-  function drawHist(amps){
-    const W = 560, H = 300, ml = 50, mr = 14, mt = 18, mb = 50;
+  /* What the bar chart shows.  Normally the real amplitudes in their real positions.
+     While the marked state is hidden, the marked state is drawn in the first slot and
+     every other slot is an anonymous unmarked state; a missed measurement is drawn in
+     the middle slot, labelled with the measured string.  All unmarked states share one
+     amplitude, so this hides which string is marked without changing any bar. */
+  function chartView(phi){
+    const real = S.collapsed !== null ? collapsedAmps() : amplitudes(phi);
+    const ghost = S.ghost ? S.ghost.amps : null;
+    if (!concealed()) return { amps: real, ghost, marked: S.marked, collapsed: S.collapsed, outcome: S.collapsed, concealed: false };
+    const N = S.N, w = sortedMarked()[0], u = w === 0 ? 1 : 0, slot = N >> 1;
+    const remap = a => { const d = new Array(N).fill(a[u]); d[0] = a[w]; return d; };
+    let amps;
+    if (S.collapsed !== null){ amps = new Array(N).fill(0); amps[slot] = 1; }   // only a miss can be shown while hidden
+    else amps = remap(real);
+    return { amps, ghost: ghost ? remap(ghost) : null, marked: new Set([0]), collapsed: S.collapsed !== null ? slot : null, outcome: S.collapsed, concealed: true };
+  }
+
+  function drawHist(V){
+    const amps = V.amps;
+    const W = 560, H = 300, ml = 50, mr = 14, mt = 18, mb = V.concealed ? 64 : 50;
     const pw = W - ml - mr, ph = H - mt - mb, N = S.N, bp = pw / N;
     const dense = bp < 4;
     const amp = S.view === 'amp';
@@ -606,7 +636,7 @@
       if (h < 0.3) return '';
       return '<rect x="' + ml + '" y="' + y.toFixed(2) + '" width="' + pw + '" height="' + h.toFixed(2) + '" ' + attrs + '/>';
     }
-    const unmarkedIdx = (() => { for (let i = 0; i < N; i++) if (!S.marked.has(i)) return i; return 0; })();
+    const unmarkedIdx = (() => { for (let i = 0; i < N; i++) if (!V.marked.has(i)) return i; return 0; })();
 
     // gridlines
     const step = amp ? 0.5 : 0.2;
@@ -618,33 +648,33 @@
     }
     // ghost bars: the distribution just before the last measurement
     const ghostAttr = 'fill="#cfc9bc"' + (dense ? '' : ' stroke="#8a8478" stroke-width="1"');
-    if (S.ghost){
-      const g = S.ghost.amps;
+    if (V.ghost){
+      const g = V.ghost;
       if (dense){
         s += band(val(g[unmarkedIdx]), 'fill="#cfc9bc" stroke="#8a8478" stroke-width="1"');
-        S.marked.forEach(i => { s += bar(i, val(g[i]), 1, ghostAttr, 7); });
+        V.marked.forEach(i => { s += bar(i, val(g[i]), 1, ghostAttr, 7); });
       } else g.forEach((a, i) => { s += bar(i, val(a), 0.78, ghostAttr); });
     }
     // live bars
     if (dense){
-      if (S.collapsed === null) s += band(val(amps[unmarkedIdx]), 'fill="#005D7E"');
-      S.marked.forEach(i => {
+      if (V.collapsed === null) s += band(val(amps[unmarkedIdx]), 'fill="#005D7E"');
+      V.marked.forEach(i => {
         // clear the band behind each marked slot, then draw the marked bar
         s += bar(i, val(amps[unmarkedIdx]), 1, 'fill="#ffffff"', 3);
         s += bar(i, val(amps[i]), 1, 'fill="#96172E"', 3);
       });
-      if (S.collapsed !== null && !S.marked.has(S.collapsed)) s += bar(S.collapsed, val(amps[S.collapsed]), 1, 'fill="#005D7E"', 3);
+      if (V.collapsed !== null && !V.marked.has(V.collapsed)) s += bar(V.collapsed, val(amps[V.collapsed]), 1, 'fill="#005D7E"', 3);
     } else {
-      amps.forEach((a, i) => { s += bar(i, val(a), S.ghost ? 0.5 : 0.72, 'fill="' + (S.marked.has(i) ? '#96172E' : '#005D7E') + '"'); });
+      amps.forEach((a, i) => { s += bar(i, val(a), V.ghost ? 0.5 : 0.72, 'fill="' + (V.marked.has(i) ? '#96172E' : '#005D7E') + '"'); });
     }
     // measured outline + label
-    if (S.collapsed !== null){
-      const i = S.collapsed, v = val(amps[i]);
-      const w = Math.max(bp * (dense ? 1 : (S.ghost ? 0.5 : 0.72)), dense ? 3 : 0);
+    if (V.collapsed !== null){
+      const i = V.collapsed, v = val(amps[i]);
+      const w = Math.max(bp * (dense ? 1 : (V.ghost ? 0.5 : 0.72)), dense ? 3 : 0);
       const y = Math.min(Y(v), base), h = Math.abs(Y(v) - base);
       s += '<rect x="' + (Xc(i) - w / 2 - 3) + '" y="' + (y - 3) + '" width="' + (w + 6) + '" height="' + (h + 6) + '" fill="none" stroke="#000005" stroke-width="1.6" rx="3"/>';
       const anchor = Xc(i) < ml + 40 ? 'start' : Xc(i) > W - mr - 40 ? 'end' : 'middle';
-      s += '<text x="' + Xc(i) + '" y="' + (y - 8) + '" text-anchor="' + anchor + '" font-family="Verdana" font-size="10.5" font-weight="700" fill="#000005">measured' + (N > 16 ? ' ' + i : '') + '</text>';
+      s += '<text x="' + Xc(i) + '" y="' + (y - 8) + '" text-anchor="' + anchor + '" font-family="Verdana" font-size="10.5" font-weight="700" fill="#000005">measured' + (N > 16 && !V.concealed ? ' ' + V.outcome : '') + '</text>';
     }
     // reference: uniform 1/N (probability) or mean amplitude (amplitude)
     let refV, refLab;
@@ -658,10 +688,24 @@
     s += '<line x1="' + ml + '" x2="' + (W - mr) + '" y1="' + base + '" y2="' + base + '" stroke="#000005" stroke-width="1.5"/>';
     const ly = mt + ph + 17;
     let axisTitle;
-    if (N <= 16){
+    if (V.concealed){
+      // the marked state under the first slot; one bracketed label for every other slot
+      const fk = N > 8 ? 11 : 12.5, kf = 'Noto Sans Math, Georgia, serif';
+      const wide = bp >= 60;
+      s += '<text x="' + (wide ? Xc(0) : ml - 4) + '" y="' + ly + '" text-anchor="' + (wide ? 'middle' : 'start') + '" font-family="' + kf + '" font-size="' + fk + '" font-weight="700" fill="#96172E">' + qKet() + '</text>';
+      if (V.collapsed !== null){
+        s += '<text x="' + Xc(V.collapsed) + '" y="' + ly + '" text-anchor="middle" font-family="' + kf + '" font-size="' + fk + '" fill="#000005">' + ket(V.outcome) + '</text>';
+      }
+      // in narrow charts the |???> label is wider than its slot, so start the bracket after the label
+      const bx1 = wide ? ml + bp + 2 : Math.max(ml + bp + 2, ml + (S.n + 2) * fk * 0.56 + 4), bx2 = W - mr - 2, by = ly + 9;
+      s += '<path d="M' + bx1 + ' ' + (by - 6) + ' V' + by + ' H' + bx2 + ' V' + (by - 6) + '" fill="none" stroke="#005D7E" stroke-width="1.5"/>';
+      s += '<line x1="' + ((bx1 + bx2) / 2) + '" x2="' + ((bx1 + bx2) / 2) + '" y1="' + by + '" y2="' + (by + 3) + '" stroke="#005D7E" stroke-width="1.5"/>';
+      s += '<text x="' + ((bx1 + bx2) / 2) + '" y="' + (by + 15) + '" text-anchor="middle" font-family="Verdana" font-size="11" font-weight="700" fill="#005D7E">All Unmarked States</text>';
+      axisTitle = 'Measurement outcome';
+    } else if (N <= 16){
       const fs = N > 8 ? 10 : 12.5;
       for (let i = 0; i < N; i++){
-        const isM = S.marked.has(i);
+        const isM = V.marked.has(i);
         s += '<text x="' + Xc(i) + '" y="' + ly + '" text-anchor="middle" font-family="' + (N > 8 ? 'Verdana' : 'Noto Sans Math, Georgia, serif') + '" font-size="' + fs + '"' +
              (isM ? ' font-weight="700" fill="#96172E"' : ' fill="#000005"') + '>' + (N > 8 ? bits(i) : ket(i)) + '</text>';
       }
@@ -680,16 +724,16 @@
     s += '<text transform="translate(13,' + (mt + ph / 2) + ') rotate(-90)" text-anchor="middle" font-family="Verdana" font-size="11" fill="#5b564e">' + (amp ? 'Amplitude' : 'Probability') + '</text>';
     $('hist').innerHTML = s;
 
-    const pm = Math.pow(amps[sortedMarked()[0]], 2);
+    const pm = Math.pow(amps[[...V.marked][0]], 2);
     $('hist').setAttribute('aria-label', (amp ? 'Amplitude' : 'Probability') + ' bar chart over ' + N + ' outcomes. ' +
-      (S.collapsed !== null ? 'Collapsed to ' + ket(S.collapsed) + '.' :
-       (M() === 1 ? 'Marked state ' + ket(sortedMarked()[0]) : 'Each of the ' + M() + ' marked states') + ': ' + fmtPct(pm) +
+      (V.collapsed !== null ? 'Collapsed to ' + ket(V.outcome) + '.' :
+       (M() === 1 ? 'Marked state ' + markedKet() : 'Each of the ' + M() + ' marked states') + ': ' + fmtPct(pm) +
        '; each other state: ' + fmtPct(Math.pow(amps[unmarkedIdx], 2)) + '.'));
   }
 
   function drawLegend(){
     const amp = S.view === 'amp';
-    let h = '<span><i class="sw m"></i>' + (M() === 1 ? 'Marked ' + ket(sortedMarked()[0]) : M() + ' marked states') + '</span><span><i class="sw u"></i>Other states</span>' +
+    let h = '<span><i class="sw m"></i>' + (M() === 1 ? 'Marked ' + markedKet() : M() + ' marked states') + '</span><span><i class="sw u"></i>Other states</span>' +
             '<span><i class="sw line"></i>' + (amp ? 'Mean amplitude' : 'Uniform 1/N') + '</span>';
     if (S.ghost) h += '<span><i class="sw g"></i>Before measuring</span>';
     $('legend').innerHTML = h;
@@ -718,13 +762,14 @@
 
     h += '<h3>Grover plane axes</h3>';
     if (one){
-      h += '<div class="eq"><span class="w">|w&#10217; = ' + kh(mk[0]) + '</span></div>';
+      h += '<div class="eq"><span class="w">|w&#10217; = ' + (concealed() ? qKet() : kh(mk[0])) + '</span></div>';
       h += '<p>The marked state, ' + w + ', is generally unknown to the user. The goal of the search algorithm is to identify the binary string corresponding to this state.</p>';
     } else {
       h += '<div class="eq"><span class="w">|w&#10217; = ' + frac(1, '&radic;' + Mm) + '( ' + termList(mk, Mm) + ' )</span></div>';
       h += '<p>The marked states are generally unknown to the user. ' + w + ' is a superposition of all of them, and the goal of the search algorithm is to identify at least one of the binary strings corresponding to these states.</p>';
     }
-    h += '<div class="eq">|w<sup>&perp;</sup>&#10217; = ' + (U === 1 ? kh(un[0]) : frac(1, '&radic;' + U) + '( ' + termList(un, U) + ' )') + '</div>';
+    h += '<div class="eq">|w<sup>&perp;</sup>&#10217; = ' + (concealed() ? frac(1, '&radic;' + U) + '( ' + sum('<i>x</i> &ne; <i>w</i>') + ' |<i>x</i>&#10217; )'
+         : U === 1 ? kh(un[0]) : frac(1, '&radic;' + U) + '( ' + termList(un, U) + ' )') + '</div>';
     h += '<p>' + wp + ' is the equal superposition of the ' + (U === 1 ? 'single unmarked string' : U.toLocaleString() + ' unmarked strings') +
          ' in the computational basis, which is orthogonal to ' + w + '.</p>';
 
@@ -757,7 +802,7 @@
   function render(phiDraw, tipState){
     const phi = phiDraw === undefined ? S.disp : phiDraw;
     drawPlotLive(phi, tipState);
-    drawHist(S.collapsed !== null ? collapsedAmps() : amplitudes(phi));
+    drawHist(chartView(phi));
     drawLegend();
   }
 
@@ -774,7 +819,7 @@
     } else {
       const a = Math.sin(phi), b = Math.cos(phi);
       const f = v => v.toFixed(3).replace('-', '−');
-      const wk = M() === 1 ? ket(sortedMarked()[0]) : '|w⟩';
+      const wk = M() === 1 ? markedKet() : '|w⟩';
       $('psi').innerHTML = '|ψ⟩ = <span class="a">' + f(a) + '</span> <span class="w">' + wk + '</span> ' +
         (b < 0 ? '−' : '+') + ' <span class="a">' + Math.abs(b).toFixed(3) + '</span> |w<sup>⊥</sup>⟩';
     }
@@ -785,7 +830,8 @@
     dis($('measure-btn'), S.busy || c);
     dis($('reset-btn'), S.busy || (!c && S.m === 1));
     $('reset-btn').classList.toggle('primary', c);
-    document.querySelectorAll('#qubit-seg button, #marked-ui button, #marked-ui input, #multi-switch').forEach(b => b.disabled = S.busy);
+    document.querySelectorAll('#qubit-seg button, #marked-ui button, #marked-ui input, #show-switch').forEach(b => b.disabled = S.busy);
+    $('multi-switch').disabled = S.busy || S.hidden;
     if (!S.busy) syncMarkedControls();
 
     $('plot').setAttribute('aria-label', c
@@ -827,7 +873,7 @@
   const wait = ms => new Promise(r => setTimeout(r, reduceMotion ? 0 : ms));
 
   function showPhase(html){ $('phase').innerHTML = html || ''; }
-  const markedRef = () => M() === 1 ? ket(sortedMarked()[0]) : 'the ' + M() + ' marked states';
+  const markedRef = () => M() === 1 ? markedKet() : 'the ' + M() + ' marked states';
 
   async function applyOp(op){
     if (S.busy || S.collapsed !== null) return;
@@ -872,6 +918,7 @@
     const d1 = shortDelta(S.disp, base), d2 = shortDelta(S.disp, base + Math.PI);
     const target = S.disp + (Math.abs(d1) <= Math.abs(d2) ? d1 : d2);
     setMirror(null); drawArc(null);
+    if (hit && S.hidden){ S.revealed = true; drawPlotStatic(); syncMarkedControls(); }
     S.ghost = { amps: amps };
     S.collapsed = out;
     await tween(S.disp, target, 420, v => render(v, hit ? 'hit' : 'miss'));
@@ -892,6 +939,7 @@
 
   async function prepare(animate){
     if (S.busy) return;
+    if (S.hidden && S.revealed){ S.marked = randomMarked(1); S.revealed = false; drawPlotStatic(); syncMarkedControls(); }
     const target = theta();
     S.collapsed = null; S.ghost = null; S.m = 1;
     setMirror(null); drawArc(null);
@@ -911,7 +959,9 @@
   // Rebuild the marked-state area for the current mode (hand-picked chips or random count).
   function buildMarkedUI(){
     const ui = $('marked-ui');
-    if (picking()){
+    if (S.hidden){
+      ui.innerHTML = '<div class="hidden-ket" id="hidden-ket"></div>';
+    } else if (picking()){
       let h = '<div class="chips">';
       for (let i = 0; i < S.N; i++){
         h += '<button type="button" class="chip" id="mk-' + i + '" data-i="' + i + '" aria-pressed="' + S.marked.has(i) + '" aria-label="' + (S.multi ? 'Toggle ' : 'Mark ') + bits(i) + '">' + ket(i) + '</button>';
@@ -932,6 +982,12 @@
   }
 
   function syncMarkedControls(){
+    if (S.hidden){
+      $('hidden-ket').textContent = markedKet();
+      $('marked-desc').textContent = '';
+      $('lbl-marked').innerHTML = 'Marked state <span class="ket" style="text-transform:none">|w&#10217;</span>';
+      return;
+    }
     if (picking()){
       document.querySelectorAll('#marked-ui .chip').forEach(b => b.setAttribute('aria-pressed', S.marked.has(+b.dataset.i)));
       $('marked-desc').textContent = S.multi
@@ -965,7 +1021,9 @@
     if (S.busy || n === S.n) return;
     const wasPicking = picking();
     S.n = n; S.N = 1 << n;
-    if (picking()){
+    if (S.hidden){
+      S.marked = randomMarked(1); S.revealed = false;
+    } else if (picking()){
       let keep = new Set([...S.marked].filter(i => i < S.N));
       if (!wasPicking || keep.size === 0) keep = randomMarked(1);
       if (!S.multi) keep = new Set([[...keep][0]]);
@@ -1028,8 +1086,27 @@
   $('marked-ui').addEventListener('change', e => { if (e.target.id === 'cnt' && !S.busy) setCount(+e.target.value); });
   $('marked-ui').addEventListener('keydown', e => { if (e.target.id === 'cnt' && e.key === 'Enter'){ e.preventDefault(); setCount(+e.target.value); } });
 
-  $('multi-switch').addEventListener('click', () => {
+  $('show-switch').addEventListener('click', () => {
     if (S.busy) return;
+    S.hidden = !S.hidden; S.revealed = false;
+    $('show-switch').setAttribute('aria-checked', !S.hidden); $('show-text').textContent = S.hidden ? 'Off' : 'On';
+    if (S.hidden){
+      // a fresh unknown state, single only
+      S.multi = false;
+      $('multi-switch').setAttribute('aria-checked', 'false'); $('multi-text').textContent = 'Off';
+      S.marked = randomMarked(1);
+      buildMarkedUI();
+      markedChanged('Show marked state off.');
+    } else {
+      // reveal the current state without disturbing the search
+      buildMarkedUI(); drawPlotStatic();
+      render(S.disp, tipStateNow()); updateReadouts();
+      announce('Show marked state on.');
+    }
+  });
+
+  $('multi-switch').addEventListener('click', () => {
+    if (S.busy || S.hidden) return;
     S.multi = !S.multi;
     $('multi-switch').setAttribute('aria-checked', S.multi); $('multi-text').textContent = S.multi ? 'On' : 'Off';
     let msg = 'Multiple marked states ' + (S.multi ? 'on.' : 'off.'), changed = false;
